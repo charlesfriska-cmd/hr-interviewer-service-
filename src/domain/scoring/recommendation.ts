@@ -79,10 +79,14 @@ export function computeOverallRecommendation(
     return { overallRecommendation: 'INSUFFICIENT_DATA', riskFlags, concerns };
   }
 
-  // ---- §8.2 — base tier. A null competencyScore is itself a material-insufficiency
-  // case: no competency ever reached adequate evidence, so there is no scoreable
-  // basis for any tier. DOMAIN_GLOSSARY defines INSUFFICIENT_DATA as exactly this
-  // process outcome. See docs/AMENDMENTS.md A2.
+  // ---- §8.2 precondition — a null competencyScore terminates in INSUFFICIENT_DATA.
+  // No recommendation tier may ever be inferred from a null score (AMENDMENTS.md
+  // A2, now canonical): tiering compares a score against thresholds, and there is
+  // no score to compare. DOMAIN_GLOSSARY defines INSUFFICIENT_DATA as exactly this
+  // process outcome — the interview ended before enough material input could be
+  // genuinely attempted. Evaluated after §8.3 so a gate risk flag is still
+  // recorded; both paths terminate at the same value, so ordering cannot change
+  // the recommendation, only the completeness of the flags accompanying it.
   if (input.competencyScore === null) {
     riskFlags.push('No competency reached adequate evidence; interview did not produce a scoreable basis');
     return { overallRecommendation: 'INSUFFICIENT_DATA', riskFlags, concerns };

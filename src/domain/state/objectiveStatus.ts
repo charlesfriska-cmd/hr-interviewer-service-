@@ -8,7 +8,8 @@
  * interview. Evaluated deterministically against persisted data — it never trusts
  * the AI's coverage_level claim in isolation.
  */
-import type { InterviewObjective } from '../types/entities.ts';
+import { classifyGap } from '../gaps/classification.ts';
+import type { EvidenceGap, InterviewObjective } from '../types/entities.ts';
 import type { CoverageLevel, EvidenceStrength, ObjectiveStatus } from '../types/enums.ts';
 
 export interface ObjectiveEvaluationInput {
@@ -17,8 +18,11 @@ export interface ObjectiveEvaluationInput {
   readonly coverageLevel: CoverageLevel;
   /** Strengths of every persisted Evidence row for this objective. */
   readonly evidenceStrengths: readonly EvidenceStrength[];
-  /** Count of EvidenceGap rows still OPEN for this objective. */
-  readonly openGapCount: number;
+  /**
+   * EvidenceGap rows still OPEN for this objective, after the turn's updates were
+   * reconciled and any auto-resolution applied (AMENDMENTS.md A5).
+   */
+  readonly openGaps: readonly EvidenceGap[];
   /** Questions asked against this objective. */
   readonly questionCount: number;
 }
@@ -27,13 +31,13 @@ export interface ObjectiveEvaluationInput {
 const SUFFICIENT_COVERAGE: CoverageLevel = 'COVERED';
 
 /**
- * All four conditions must hold. Evidence count alone is never sufficient.
+ * Conditions 1-3: the substantive evidence bar, independent of any gap state.
+ * Isolated because A5's auto-resolution is gated on exactly these three holding.
  *   1. rolled-up coverage reached the sufficient level
  *   2. at least one persisted Evidence row is not INSUFFICIENT
  *   3. targetEvidenceCount met, where one is meaningfully configured
- *   4. no EvidenceGap for this objective remains OPEN
  */
-export function meetsSatisfiedCriteria(input: ObjectiveEvaluationInput): boolean {
+export function meetsSubstantiveCriteria(input: ObjectiveEvaluationInput): boolean {
   if (input.coverageLevel !== SUFFICIENT_COVERAGE) return false;
 
   const usable = input.evidenceStrengths.filter((s) => s !== 'INSUFFICIENT');
@@ -42,9 +46,22 @@ export function meetsSatisfiedCriteria(input: ObjectiveEvaluationInput): boolean
   const target = input.objective.targetEvidenceCount;
   if (target > 0 && usable.length < target) return false;
 
-  if (input.openGapCount > 0) return false;
-
   return true;
+}
+
+/** Condition 4 (A5): only an explicitly BLOCKING unresolved gap can hold an
+ * objective back. Advisory gaps inform the interview; they never silently invert
+ * an outcome the evidence already supports. */
+export function hasBlockingGap(openGaps: readonly EvidenceGap[]): boolean {
+  return openGaps.some((g) => g.status === 'OPEN' && classifyGap(g.gapType) === 'BLOCKING');
+}
+
+/**
+ * All four conditions must hold. Evidence count alone is never sufficient.
+ * Condition 4 is narrowed per AMENDMENTS.md A5 — see hasBlockingGap.
+ */
+export function meetsSatisfiedCriteria(input: ObjectiveEvaluationInput): boolean {
+  return meetsSubstantiveCriteria(input) && !hasBlockingGap(input.openGaps);
 }
 
 /**

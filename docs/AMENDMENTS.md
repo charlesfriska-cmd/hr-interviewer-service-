@@ -6,14 +6,16 @@ Status: Living record, opened at the start of implementation against
 `DOMAIN_GLOSSARY.md` v1 / `ARCHITECTURE.md` v2 / `HR_INTERVIEWER_SYSTEM_PROMPT.md` v1.1.
 
 Blockers C1–C16 and B1–B6 are all closed in the specifications; no
-implementation-blocking contradiction remains. The items below are decisions the
+implementation-blocking contradiction remains. **A1, A2 and A5 are now APPLIED
+and made canonical in `CONTRACT_ADDENDUM_v3.1.md`** — the sections below are
+retained as the rationale record. The items below are decisions the
 specifications leave open, or places where implementation revealed a detail worth
 confirming. **Each is a proposed amendment awaiting sign-off, not an approved
 deviation.** Where a decision is already implemented in code, the module is named.
 
 ---
 
-## A1 — `Question` / `CandidateResponse` fields retained beyond §2.8's restatement
+## A1 — APPLIED (see CONTRACT_ADDENDUM_v3.1 §A1) — `Question` fields restored
 
 **Observation.** `API_CONTRACT.md` v3 §2.8 restates both interfaces under the
 heading "amended — B4" and marks only the two new fields (`presentedAt`,
@@ -41,7 +43,7 @@ confirming.
 
 ---
 
-## A2 — `competencyScore === null` resolves to `INSUFFICIENT_DATA`
+## A2 — APPLIED (see CONTRACT_ADDENDUM_v3.1 §A2) — null competency score
 
 **Observation.** `SCORING_FRAMEWORK.md` v3 §8.2 says that when `competencyScore`
 is null, evaluation should "skip directly to §8.5". But §8.5's effect is
@@ -108,7 +110,7 @@ validated values.
 
 ---
 
-## A5 — Risk: `SATISFIED` requires zero open gaps, but nothing obliges the AI to close one
+## A5 — APPLIED (see CONTRACT_ADDENDUM_v3.1 §A5) — gaps are advisory; Node owns completion
 
 **Observation.** `INTERVIEW_STATE.md` v3 §5a condition 4 requires that no
 `EvidenceGap` for an objective remains `OPEN` before it can reach `SATISFIED`.
@@ -133,8 +135,12 @@ letting an omission silently invert an outcome. The alternative — a prompt
 instruction to always close gaps before `MOVE_NEXT` — is weaker, because it makes
 a scoring-critical outcome depend on model compliance.
 
-**This is the highest-priority item in this document.** It needs a decision before
-the turn pipeline is built.
+**Resolved.** Gaps are now classified `BLOCKING` (`CONTRADICTION` only) or
+`ADVISORY` by deterministic Node-owned rule. Condition 4 checks blocking gaps
+only, and advisory gaps no longer supported by the latest structured assessment
+are auto-resolved once conditions 1–3 hold, each with a mandatory
+`GAP_AUTO_RESOLVED` audit event. A blocking gap is never auto-resolved unless its
+own deterministic rule is satisfied. See `CONTRACT_ADDENDUM_v3.1.md` §A5.
 
 ---
 

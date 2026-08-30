@@ -6,7 +6,12 @@ import {
   onObjectiveClosed,
   onQuestionPresented,
 } from '../../src/domain/state/objectiveStatus.ts';
-import { asObjectiveId, type InterviewObjective } from '../../src/domain/types/entities.ts';
+import {
+  asObjectiveId,
+  type EvidenceGap,
+  type InterviewObjective,
+} from '../../src/domain/types/entities.ts';
+import type { EvidenceGapType } from '../../src/domain/types/enums.ts';
 import type { ObjectiveEvaluationInput } from '../../src/domain/state/objectiveStatus.ts';
 
 const objective = (over: Partial<InterviewObjective> = {}): InterviewObjective => ({
@@ -20,11 +25,22 @@ const objective = (over: Partial<InterviewObjective> = {}): InterviewObjective =
   ...over,
 });
 
+const gap = (gapType: EvidenceGapType, id = `gap_${gapType}`): EvidenceGap => ({
+  id,
+  interviewId: 'int_1',
+  objectiveId: asObjectiveId('obj-uuid-1'),
+  gapType,
+  description: 'missing element',
+  status: 'OPEN',
+  createdAt: '2026-01-01T10:00:00Z',
+  resolvedAt: null,
+});
+
 const input = (over: Partial<ObjectiveEvaluationInput> = {}): ObjectiveEvaluationInput => ({
   objective: objective(),
   coverageLevel: 'COVERED',
   evidenceStrengths: ['STRONG', 'MODERATE'],
-  openGapCount: 0,
+  openGaps: [],
   questionCount: 2,
   ...over,
 });
@@ -48,8 +64,12 @@ describe('SATISFIED requires all four conditions (B5, §5a)', () => {
     expect(meetsSatisfiedCriteria(input({ evidenceStrengths: ['VERY_STRONG'] }))).toBe(false);
   });
 
-  it('rejects while any gap for the objective is still OPEN', () => {
-    expect(meetsSatisfiedCriteria(input({ openGapCount: 1 }))).toBe(false);
+  it('rejects while a BLOCKING gap is still open (A5 condition 4)', () => {
+    expect(meetsSatisfiedCriteria(input({ openGaps: [gap('CONTRADICTION')] }))).toBe(false);
+  });
+
+  it('satisfies despite an open ADVISORY gap the evidence already covers (A5)', () => {
+    expect(meetsSatisfiedCriteria(input({ openGaps: [gap('MEASURABLE_OUTCOME')] }))).toBe(true);
   });
 
   it('satisfies on coverage and usable evidence alone when no target is configured', () => {
@@ -71,7 +91,7 @@ describe('lifecycle transitions', () => {
   });
 
   it('holds IN_PROGRESS after a turn that does not meet the bar', () => {
-    expect(afterAppliedTurn(input({ openGapCount: 1 }))).toBe('IN_PROGRESS');
+    expect(afterAppliedTurn(input({ openGaps: [gap('CONTRADICTION')] }))).toBe('IN_PROGRESS');
   });
 
   it('reaches SATISFIED after a qualifying turn', () => {
