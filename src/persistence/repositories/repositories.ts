@@ -267,6 +267,22 @@ export class PgPlanRepository implements P.PlanRepository {
     return rows.map((r) => r.id as string);
   }
 
+  async requirementsForObjective(_interviewId: string, objectiveId: ObjectiveId, tx?: P.TxScope) {
+    const { rows } = await exec(this.pool, tx).query(
+      `SELECT jr.id, jr.label, jr.priority, jr.competency_tag
+         FROM interview_objective_requirements oor
+         JOIN job_requirements jr ON jr.id = oor.requirement_id
+        WHERE oor.objective_id = $1 ORDER BY jr.id`,
+      [objectiveId],
+    );
+    return rows.map((r) => ({
+      id: r.id as string,
+      label: r.label as string,
+      priority: r.priority as 'MUST_HAVE' | 'NICE_TO_HAVE',
+      competencyTag: r.competency_tag as string,
+    }));
+  }
+
   async insertPlan(interviewId: string, version: number, createdAt: string, tx: P.TxScope): Promise<void> {
     await exec(this.pool, tx).query(
       `INSERT INTO interview_plans (interview_id, version, created_at) VALUES ($1,$2,$3)`,
@@ -401,6 +417,22 @@ export class PgEvidenceRepository implements P.EvidenceRepository {
       [interviewId, objective.competencyTag, objective.requirementIds],
     );
     return rows.map((r) => r.strength as EvidenceStrength);
+  }
+
+  async relevantForObjective(interviewId: string, objective: InterviewObjective, tx?: P.TxScope) {
+    const { rows } = await exec(this.pool, tx).query(
+      `SELECT requirement_id, competency_tag, summary, strength FROM evidence
+        WHERE interview_id = $1
+          AND (competency_tag = $2 OR requirement_id = ANY($3::text[]))
+        ORDER BY created_at, id`,
+      [interviewId, objective.competencyTag, objective.requirementIds],
+    );
+    return rows.map((r) => ({
+      requirementId: r.requirement_id as string | null,
+      competencyTag: r.competency_tag as string,
+      summary: r.summary as string,
+      strength: r.strength as EvidenceStrength,
+    }));
   }
 
   async forInterview(interviewId: string, tx?: P.TxScope) {

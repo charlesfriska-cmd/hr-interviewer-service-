@@ -10,6 +10,7 @@
  * lifecycle status. The AI proposes objectives; it never mints canonical ids.
  */
 import { auditIntent, type AuditIntent } from '../../domain/audit/auditIntent.ts';
+import { buildInitializationPayload } from '../../llm/prompt/buildUserPayload.ts';
 import { validatePlan, type PlanRejectionReason } from '../../domain/rules/planRules.ts';
 import { asObjectiveId, type Interview, type InterviewObjective } from '../../domain/types/entities.ts';
 import type { InterviewPhase } from '../../domain/types/enums.ts';
@@ -101,6 +102,8 @@ export interface InitializationDeps {
     maxDurationMinutes: number; maxQuestions: number; maxFollowUpsPerObjective: number;
     maxCandidateResponseWindowSeconds: number; sessionIdleTimeoutMinutes: number;
   };
+  /** Truncation caps applied before any text reaches the provider. */
+  readonly contextLimits: { maxCvChars: number; maxJdChars: number };
 }
 
 interface InitializationDecisionShape {
@@ -199,23 +202,31 @@ export class InitializationPipeline {
 
     // ---- Steps 4-5: build the compact context and call the agent. No transaction
     // is open. criticalGate is deliberately absent from what the AI receives (C4).
-    const llm = await d.llm.generate('initialization', {
-      interviewId,
-      positionTitle: cmd.position.title,
-      ...(cmd.position.companyContext ? { companyContext: cmd.position.companyContext } : {}),
-      ...(cmd.position.organizationalValues ? { organizationalValues: cmd.position.organizationalValues } : {}),
-      requirements: requirementRows.map((r) => ({
-        id: r.id, label: r.label, priority: r.priority, competencyTag: r.competencyTag,
-      })),
-      candidateProfile: { headline: cmd.candidate.fullName, yearsOfExperience: null, keySkills: [], notableExperience: [] },
-      constraints: {
-        questionsAskedCount: 0,
-        maxQuestions: cmd.maxQuestions ?? d.limits.maxQuestions,
-        followUpsUsedForObjective: 0,
-        maxFollowUpsPerObjective: cmd.maxFollowUpsPerObjective ?? d.limits.maxFollowUpsPerObjective,
-        remainingTimeMinutes: cmd.maxDurationMinutes ?? d.limits.maxDurationMinutes,
-      },
-    });
+    const llm = await d.llm.generate(
+      'initialization',
+      buildInitializationPayload({
+        interviewId,
+        positionTitle: cmd.position.title,
+        jobDescription: cmd.position.jobDescription,
+        companyContext: cmd.position.companyContext,
+        organizationalValues: cmd.position.organizationalValues,
+        requirements: requirementRows.map((r) => ({
+          id: r.id,
+          label: r.label,
+          priority: r.priority as 'MUST_HAVE' | 'NICE_TO_HAVE',
+          competencyTag: r.competencyTag,
+          // criticalGate is deliberately not mapped through (C4).
+        })),
+        candidateFullName: cmd.candidate.fullName,
+        candidateCvText: cmd.candidate.cvRawText,
+        constraints: {
+          maxQuestions: cmd.maxQuestions ?? d.limits.maxQuestions,
+          maxFollowUpsPerObjective: cmd.maxFollowUpsPerObjective ?? d.limits.maxFollowUpsPerObjective,
+          maxDurationMinutes: cmd.maxDurationMinutes ?? d.limits.maxDurationMinutes,
+        },
+        limits: { maxCvChars: d.contextLimits.maxCvChars, maxJdChars: d.contextLimits.maxJdChars },
+      }),
+    );
 
     // ---- Steps 6-7: schema validation happened inside the gateway; a failure is
     // retryable and leaves the interview usable for another attempt.

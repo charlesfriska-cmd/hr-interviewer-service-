@@ -206,3 +206,45 @@ different or absent key on a question that has moved on is a stale resubmit.
 Checking staleness first makes a legitimate network retry impossible, since
 `lastQuestionId` has advanced by then. A claim that then fails the stale check is
 released so it cannot hold the key's lease.
+
+---
+
+## Provider integration findings
+
+### P1 — `LLMRequest.temperature` is rejected by the current Claude model family
+
+**Observation.** `API_CONTRACT.md` v3 §3.1 defines `LLMRequest.temperature` as a
+`[NODE][CONFIG]` field, and `ARCHITECTURE.md` §17 recommends "temperature kept
+low, e.g. 0.2–0.4, for consistency of judgment". That guidance predates the
+current models: Claude Opus 5, Sonnet 5, Opus 4.7 and Opus 4.8 removed the
+sampling parameters entirely and return **HTTP 400** if `temperature`, `top_p` or
+`top_k` is sent. Sending the contracted value would fail every call.
+
+**Handling.** This is provider translation, which `ARCHITECTURE.md` §17 assigns
+to the adapter ("provider-specific adapters own all provider-specific
+request/response translation"), so no contract change was improvised. The adapter
+applies `temperature` only to models that still accept it and omits it otherwise;
+`LLM_TEMPERATURE` remains configuration and is honoured wherever the provider
+allows it. Determinism of *judgment* is instead served by `output_config.effort`,
+which is the current control surface.
+
+**Recommended contract amendment (not applied):** re-tag `LLMRequest.temperature`
+as provider-optional and add `effort` alongside it, so the contract describes what
+current providers actually accept. Deferred rather than improvised — it needs the
+same sign-off as any other contract change.
+
+### P2 — Confidence band is not sent on the turn payload
+
+`TurnRequest` has never carried the rolling `confidence_band`; the agent emits one
+per turn and Node.js stores it. The turn payload therefore sends
+`currentConfidenceBand: null` with `currentCoverage` populated. If the agent
+should see its own prior band, that is an additive contract change to
+`TurnRequest`, not an adapter decision.
+
+### Not a contradiction — structured output
+
+`API_CONTRACT.md` §7's requirement that the provider's own structured-output
+guarantee never be the trust boundary is preserved exactly: the canonical Ajv
+schema is handed to the provider via `output_config.format` **and** every response
+is independently re-validated by `validateDecision` before it leaves the adapter.
+The schemas were not weakened to suit the provider.

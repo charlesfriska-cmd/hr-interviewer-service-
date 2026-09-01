@@ -22,6 +22,7 @@ import {
 } from '../../domain/state/objectiveStatus.ts';
 import { computeTurnActiveSeconds, remainingTimeMinutes } from '../../domain/time/activeTime.ts';
 import { auditIntent, type AuditIntent } from '../../domain/audit/auditIntent.ts';
+import { buildTurnPayload } from '../../llm/prompt/buildUserPayload.ts';
 import { asObjectiveId, type Evidence, type InterviewObjective } from '../../domain/types/entities.ts';
 import type { EvidenceGapType, InterviewPhase, RecommendedAction } from '../../domain/types/enums.ts';
 import type {
@@ -86,6 +87,13 @@ export interface TurnPipelineDeps {
    * with the turn that triggered them.
    */
   readonly finalize?: ((interviewId: string, tx: TxScope) => Promise<void>) | undefined;
+  /** Truncation cap applied to the answer before it reaches the provider. */
+  readonly contextLimits: { maxAnswerChars: number };
+  /** Advisory soft-budget signal (C15); never forces a transition. */
+  readonly phaseBudgetStatus?:
+    | ((state: { phaseElapsedSeconds: Partial<Record<InterviewPhase, number>>; currentPhase: string },
+        interview: { maxDurationMinutes: number }) => 'ON_TRACK' | 'OVER_BUDGET')
+    | undefined;
 }
 
 /** The deterministic message shown when the provider path fails (§22 fail-soft). */
@@ -210,20 +218,52 @@ export class TurnPipeline {
     const mustHaveObjectiveIds = new Set(await d.plan.mustHaveObjectiveIds(cmd.interviewId));
 
     // ---- Steps 5-7: build context and call the agent. No transaction is open.
-    const llmResult = await d.llm.runTurn({
-      interviewId: cmd.interviewId,
-      currentPhase: state.currentPhase,
-      currentObjective,
-      currentQuestion: { id: question.id, text: question.text },
-      latestAnswer: response.answerText,
-      constraints: {
-        questionsAskedCount: state.questionsAskedCount,
-        maxQuestions: interview.maxQuestions,
-        followUpsUsedForObjective: state.followUpsByObjective[question.objectiveId] ?? 0,
-        maxFollowUpsPerObjective: interview.maxFollowUpsPerObjective,
-        remainingTimeMinutes: remainingTimeMinutes(elapsedActive, interview.maxDurationMinutes),
-      },
-    });
+    // Current rolling coverage for this objective, so the agent sees where the
+    // assessment stands without being sent the assessment history.
+    const currentCoverage = currentObjective
+      ? await d.assessments.coverageForObjective(cmd.interviewId, currentObjective)
+      : null;
+    const openGaps = currentObjective
+      ? await d.gaps.openForObjective(cmd.interviewId, currentObjective.id)
+      : [];
+    const relevantEvidence = currentObjective
+      ? await d.evidence.relevantForObjective(cmd.interviewId, currentObjective)
+      : [];
+
+    const llmResult = await d.llm.runTurn(
+      buildTurnPayload({
+        interviewId: cmd.interviewId,
+        currentPhase: state.currentPhase,
+        currentObjective: currentObjective
+          ? {
+              id: String(currentObjective.id),
+              phase: currentObjective.phase,
+              competencyTag: currentObjective.competencyTag,
+              targetEvidenceCount: currentObjective.targetEvidenceCount,
+            }
+          : null,
+        relevantRequirements: currentObjective
+          ? await d.plan.requirementsForObjective(cmd.interviewId, currentObjective.id)
+          : [],
+        currentQuestion: { id: question.id, text: question.text },
+        latestAnswer: response.answerText,
+        relevantEvidence,
+        unresolvedGaps: openGaps.map((g) => ({ gapType: g.gapType, description: g.description })),
+        currentCoverage,
+        // The rolling band is written per turn and read at finalization; it is not
+        // part of what the agent needs to judge this answer.
+        currentConfidenceBand: null,
+        constraints: {
+          questionsAskedCount: state.questionsAskedCount,
+          maxQuestions: interview.maxQuestions,
+          followUpsUsedForObjective: state.followUpsByObjective[question.objectiveId] ?? 0,
+          maxFollowUpsPerObjective: interview.maxFollowUpsPerObjective,
+          remainingTimeMinutes: remainingTimeMinutes(elapsedActive, interview.maxDurationMinutes),
+          phaseBudgetStatus: d.phaseBudgetStatus?.(state, interview) ?? 'ON_TRACK',
+        },
+        limits: { maxAnswerChars: d.contextLimits.maxAnswerChars },
+      }),
+    );
 
     // ---- Step 8: fail-soft. State is untouched and nothing is cached as a
     // success, so the next attempt resumes from an unadvanced state (C10).

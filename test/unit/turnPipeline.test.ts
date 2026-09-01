@@ -74,6 +74,7 @@ function build(
     audit: world.auditWriter,
     llm,
     safety,
+    contextLimits: { maxAnswerChars: 6_000 },
   };
   return { pipeline: new TurnPipeline(deps), ops, uow, llm };
 }

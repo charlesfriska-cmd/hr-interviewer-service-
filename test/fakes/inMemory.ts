@@ -183,6 +183,12 @@ export class FakeWorld {
     objectives: async () => this.objectives,
     mustHaveObjectiveIds: async () =>
       this.objectives.filter((o) => o.requirementIds.length > 0).map((o) => String(o.id)),
+    requirementsForObjective: async (_i, objectiveId) => {
+      const o = this.objectives.find((x) => x.id === objectiveId);
+      return (o?.requirementIds ?? []).map((id) => ({
+        id, label: id, priority: 'MUST_HAVE' as const, competencyTag: o?.competencyTag ?? 'x',
+      }));
+    },
     setObjectiveStatus: async (_i, objectiveId: ObjectiveId, status: ObjectiveStatus) => {
       const o = this.objectives.find((x) => x.id === objectiveId);
       if (o) o.status = status;
@@ -209,6 +215,15 @@ export class FakeWorld {
     insertMany: async (rows) => {
       this.evidence.push(...rows);
     },
+    relevantForObjective: async (_i, objective) =>
+      this.evidence
+        .filter((e) => e.competencyTag === objective.competencyTag)
+        .map((e) => ({
+          requirementId: e.requirementId,
+          competencyTag: e.competencyTag,
+          summary: e.summary,
+          strength: e.strength,
+        })),
     strengthsForObjective: async (_i, objective) =>
       this.evidence
         .filter((e) => e.competencyTag === objective.competencyTag)

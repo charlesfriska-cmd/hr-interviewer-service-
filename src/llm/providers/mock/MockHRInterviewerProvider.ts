@@ -50,7 +50,11 @@ export class MockHRInterviewerProvider {
    * the returned payload is always independently re-validated by the caller —
    * the provider's own guarantee is never the trust boundary.
    */
-  async generate(mode: LLMMode, payload: unknown): Promise<ProviderResult> {
+  async generate(
+    mode: LLMMode,
+    payload: unknown,
+    _context?: { interviewId?: string | null; correlationId?: string },
+  ): Promise<ProviderResult> {
     this.calls.push({ mode, payload });
     const maxRetries = this.opts.maxTransportRetries ?? 2;
 

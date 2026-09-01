@@ -26,7 +26,14 @@ import {
   PgReferenceRepository,
 } from '../persistence/repositories/repositories.ts';
 import { PgOperationStore } from '../persistence/repositories/operationStore.ts';
+import { ClaudeProvider } from '../llm/providers/claude/ClaudeProvider.ts';
+import type { InterviewerProvider } from '../llm/providers/provider.ts';
 import { MockHRInterviewerProvider } from '../llm/providers/mock/MockHRInterviewerProvider.ts';
+import { ProviderMetricsRecorder } from '../observability/providerMetrics.ts';
+import { resolveProviderConfig, type ResolvedProviderConfig } from '../config/provider.config.ts';
+import { MVP_CALIBRATION_DEFAULTS } from '../config/scoring.config.ts';
+import { phaseBudgetStatus } from '../domain/time/activeTime.ts';
+import type { InterviewPhase } from '../domain/types/enums.ts';
 import type { Clock, IdGenerator, SafetyScanner, TxScope } from '../application/ports/ports.ts';
 
 export const requestHash = (body: unknown): string =>
@@ -74,17 +81,18 @@ export interface Container {
   readonly evidence: PgEvidenceRepository;
   readonly assessments: PgAssessmentRepository;
   readonly plan: PgPlanRepository;
-  readonly provider: MockHRInterviewerProvider;
+  readonly provider: InterviewerProvider;
 }
 
 export interface ContainerOptions {
   readonly pool: pg.Pool;
-  readonly provider: MockHRInterviewerProvider;
+  readonly provider: InterviewerProvider;
   readonly clock?: Clock;
   readonly ids?: IdGenerator;
   readonly encryptionKey?: Buffer;
   readonly leaseSeconds?: number;
   readonly safety?: SafetyScanner;
+  readonly contextLimits?: { maxCvChars?: number; maxJdChars?: number; maxAnswerChars?: number };
 }
 
 export function buildContainer(opts: ContainerOptions): Container {
@@ -146,8 +154,15 @@ export function buildContainer(opts: ContainerOptions): Container {
       write: (id, a, tx) => audit.write(id, a, tx),
       writeDetached: (id, a) => audit.writeDetached(id, a),
     },
-    llm: { generate: (mode, payload) => opts.provider.generate(mode, payload) },
+    llm: {
+      generate: (mode, payload) =>
+        opts.provider.generate(mode, payload) as Promise<{
+          kind: 'ok' | 'failed'; decision?: unknown; errors?: string[];
+        }>,
+    },
     limits: INTERVIEW_LIMIT_DEFAULTS,
+    contextLimits: { maxCvChars: opts.contextLimits?.maxCvChars ?? 20_000,
+                     maxJdChars: opts.contextLimits?.maxJdChars ?? 10_000 },
   });
 
   const turn = new TurnPipeline({
@@ -158,13 +173,55 @@ export function buildContainer(opts: ContainerOptions): Container {
       fail: (id, r) => operations.fail(id, r),
     },
     interviews, state, plan, questions, responses, evidence, gaps, assessments, audit,
-    llm: { runTurn: (payload) => opts.provider.generate('turn', payload) },
+    llm: {
+      runTurn: (payload) =>
+        opts.provider.generate('turn', payload) as Promise<{
+          kind: 'ok' | 'failed'; decision?: unknown; errors?: string[];
+        }>,
+    },
     safety: opts.safety ?? denylistScanner,
     finalize: (interviewId: string, tx: TxScope) => finalize.finalize(interviewId, tx),
+    contextLimits: { maxAnswerChars: opts.contextLimits?.maxAnswerChars ?? 6_000 },
+    phaseBudgetStatus: (st, iv) =>
+      phaseBudgetStatus(
+        st.phaseElapsedSeconds[st.currentPhase as InterviewPhase] ?? 0,
+        MVP_CALIBRATION_DEFAULTS.phaseSoftBudgetShare[
+          st.currentPhase as keyof typeof MVP_CALIBRATION_DEFAULTS.phaseSoftBudgetShare
+        ] ?? 0.2,
+        iv.maxDurationMinutes,
+      ),
   });
 
   return {
     pool: opts.pool, initialization, turn, finalize, operations, interviews, state,
     questions, finals, audit, evidence, assessments, plan, provider: opts.provider,
   };
+}
+
+/**
+ * Provider selection. This is the single dependency-injection point named in
+ * ARCHITECTURE.md §17 — swapping providers changes nothing in interview logic.
+ */
+export function buildProvider(
+  config: ResolvedProviderConfig = resolveProviderConfig(),
+  metrics = new ProviderMetricsRecorder(),
+): InterviewerProvider {
+  if (config.provider === 'claude') {
+    return new ClaudeProvider(
+      {
+        apiKey: config.apiKey,
+        model: config.model,
+        maxOutputTokens: config.maxOutputTokens,
+        timeoutMs: config.timeoutMs,
+        maxTransportRetries: config.maxTransportRetries,
+        maxSchemaRetries: config.maxSchemaRetries,
+        effort: config.effort,
+        temperature: config.temperature,
+      },
+      metrics,
+    );
+  }
+  // Mock mode needs no credentials and stays available for tests and local
+  // deterministic development.
+  return new MockHRInterviewerProvider({ steps: [] });
 }

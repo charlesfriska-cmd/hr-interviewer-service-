@@ -4,9 +4,9 @@
  */
 import { createPool } from './persistence/db/pool.ts';
 import { migrate } from './persistence/db/migrate.ts';
-import { buildContainer } from './composition/container.ts';
+import { buildContainer, buildProvider } from './composition/container.ts';
 import { createApp } from './api/app.ts';
-import { MockHRInterviewerProvider, initSuccess } from './llm/providers/mock/MockHRInterviewerProvider.ts';
+import { resolveProviderConfig } from './config/provider.config.ts';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error('DATABASE_URL is required');
@@ -16,10 +16,15 @@ if (!serviceApiKey) throw new Error('SERVICE_API_KEY is required');
 const pool = createPool(databaseUrl);
 await migrate(pool, new URL('../migrations', import.meta.url).pathname);
 
-// LLM_PROVIDER selects the adapter. Only the mock exists in this stage; a real
-// adapter plugs in here with no change to interview logic.
-const provider = new MockHRInterviewerProvider({ steps: [{ kind: 'respond', payload: initSuccess() }] });
+// LLM_PROVIDER selects the adapter. Selecting `claude` without credentials fails
+// here, at startup, rather than at the first candidate turn.
+const providerConfig = resolveProviderConfig();
+const provider = buildProvider(providerConfig);
 
 const app = createApp({ container: buildContainer({ pool, provider }), serviceApiKey });
 const port = Number(process.env.PORT ?? 3000);
-app.listen(port, () => console.log(`hr-interviewer-service listening on ${port}`));
+app.listen(port, () =>
+  process.stdout.write(
+    `${JSON.stringify({ event: 'service.started', port, provider: providerConfig.provider, model: providerConfig.model })}\n`,
+  ),
+);

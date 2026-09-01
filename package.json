@@ -15,9 +15,11 @@
     "test:unit": "vitest run test/unit",
     "test:integration": "vitest run test/integration",
     "start": "tsx src/index.ts",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "smoke:claude": "tsx scripts/smoke-claude.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.123.0",
     "ajv": "^8.17.1",
     "express": "^5.2.1",
     "pg": "^8.23.0",

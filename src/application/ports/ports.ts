@@ -84,6 +84,16 @@ export interface PlanRepository {
    * interview open.
    */
   mustHaveObjectiveIds(interviewId: string): Promise<string[]>;
+  /** Compact requirement descriptors linked to one objective, for the turn payload. */
+  requirementsForObjective(
+    interviewId: string,
+    objectiveId: ObjectiveId,
+  ): Promise<Array<{
+    id: string;
+    label: string;
+    priority: 'MUST_HAVE' | 'NICE_TO_HAVE';
+    competencyTag: string;
+  }>>;
   setObjectiveStatus(
     interviewId: string,
     objectiveId: ObjectiveId,
@@ -106,6 +116,20 @@ export interface CandidateResponseRepository {
 
 export interface EvidenceRepository {
   insertMany(rows: readonly Evidence[], tx: TxScope): Promise<void>;
+  /**
+   * Evidence for the current objective only. This is the method that keeps the
+   * turn payload bounded (INTERVIEW_STATE.md §5) — there is deliberately no
+   * "all evidence" method reachable from the turn path.
+   */
+  relevantForObjective(
+    interviewId: string,
+    objective: InterviewObjective,
+  ): Promise<Array<{
+    requirementId: string | null;
+    competencyTag: string;
+    summary: string;
+    strength: EvidenceStrength;
+  }>>;
   strengthsForObjective(
     interviewId: string,
     objective: InterviewObjective,
