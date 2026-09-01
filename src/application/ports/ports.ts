@@ -77,6 +77,13 @@ export interface InterviewStateRepository {
 
 export interface PlanRepository {
   objectives(interviewId: string): Promise<InterviewObjective[]>;
+  /**
+   * Objective ids linked to at least one MUST_HAVE requirement. The
+   * PREMATURE_COMPLETION_BLOCKED guardrail is scoped to these specifically —
+   * an unresolved objective carrying only NICE_TO_HAVE work must not hold the
+   * interview open.
+   */
+  mustHaveObjectiveIds(interviewId: string): Promise<string[]>;
   setObjectiveStatus(
     interviewId: string,
     objectiveId: ObjectiveId,

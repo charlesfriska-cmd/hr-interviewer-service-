@@ -181,6 +181,8 @@ export class FakeWorld {
 
   plan: P.PlanRepository = {
     objectives: async () => this.objectives,
+    mustHaveObjectiveIds: async () =>
+      this.objectives.filter((o) => o.requirementIds.length > 0).map((o) => String(o.id)),
     setObjectiveStatus: async (_i, objectiveId: ObjectiveId, status: ObjectiveStatus) => {
       const o = this.objectives.find((x) => x.id === objectiveId);
       if (o) o.status = status;

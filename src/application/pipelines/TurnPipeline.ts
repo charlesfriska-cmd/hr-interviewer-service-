@@ -25,6 +25,7 @@ import { auditIntent, type AuditIntent } from '../../domain/audit/auditIntent.ts
 import { asObjectiveId, type Evidence, type InterviewObjective } from '../../domain/types/entities.ts';
 import type { EvidenceGapType, InterviewPhase, RecommendedAction } from '../../domain/types/enums.ts';
 import type {
+  TxScope,
   AssessmentRepository,
   AssessmentUpdate,
   AuditWriter,
@@ -79,6 +80,12 @@ export interface TurnPipelineDeps {
   readonly audit: AuditWriter;
   readonly llm: LLMGateway;
   readonly safety: SafetyScanner;
+  /**
+   * Runs inside TX-B when the final action is COMPLETE_INTERVIEW, so the
+   * CLOSING -> COMPLETED transition and the FinalAssessment commit atomically
+   * with the turn that triggered them.
+   */
+  readonly finalize?: ((interviewId: string, tx: TxScope) => Promise<void>) | undefined;
 }
 
 /** The deterministic message shown when the provider path fails (§22 fail-soft). */
@@ -136,15 +143,17 @@ export class TurnPipeline {
 
     const state = await d.state.load(cmd.interviewId);
     if (!state) return { kind: 'error', status: 404, code: 'STATE_NOT_FOUND' };
-    if (state.lastQuestionId !== cmd.questionId) {
-      return { kind: 'error', status: 409, code: 'STALE_QUESTION' };
-    }
 
-    const question = await d.questions.load(cmd.questionId);
-    if (!question) return { kind: 'error', status: 404, code: 'QUESTION_NOT_FOUND' };
-
-    // ---- Step 3: idempotency. The store resolves all six outcomes including the
-    // B3 lease reclaim, so a crashed attempt resumes instead of wedging at 409.
+    // ---- Step 3: idempotency, consulted BEFORE the stale-question check.
+    //
+    // §6 distinguishes the two cases by key: the same key on an already-succeeded
+    // turn is a replay and must return the cached body, while a different or
+    // absent key on a question that has moved on is a stale resubmit. Checking
+    // staleness first would make a legitimate network retry — the case idempotency
+    // exists for — impossible, since lastQuestionId has advanced by then.
+    //
+    // The store resolves all six outcomes here, the B3 lease reclaim included, so
+    // a crashed attempt resumes instead of wedging at 409.
     const claim = await d.operations.claim({
       scope: 'interview_response',
       idempotencyKey: cmd.idempotencyKey,
@@ -157,6 +166,19 @@ export class TurnPipeline {
     }
     if (claim.kind === 'conflict') return { kind: 'error', status: 409, code: 'OPERATION_IN_FLIGHT' };
     if (claim.kind === 'terminal') return { kind: 'error', status: claim.status, code: 'OPERATION_TERMINAL' };
+
+    // Not a replay: this must be an answer to the outstanding question.
+    if (state.lastQuestionId !== cmd.questionId) {
+      // Release the claim so a stale attempt cannot hold the key's lease.
+      await d.operations.fail(claim.operationId, true);
+      return { kind: 'error', status: 409, code: 'STALE_QUESTION' };
+    }
+
+    const question = await d.questions.load(cmd.questionId);
+    if (!question) {
+      await d.operations.fail(claim.operationId, true);
+      return { kind: 'error', status: 404, code: 'QUESTION_NOT_FOUND' };
+    }
 
     const now = d.clock.now();
 
@@ -185,6 +207,7 @@ export class TurnPipeline {
 
     const objectives = await d.plan.objectives(cmd.interviewId);
     const currentObjective = objectives.find((o) => o.id === question.objectiveId) ?? null;
+    const mustHaveObjectiveIds = new Set(await d.plan.mustHaveObjectiveIds(cmd.interviewId));
 
     // ---- Steps 5-7: build context and call the agent. No transaction is open.
     const llmResult = await d.llm.runTurn({
@@ -239,7 +262,11 @@ export class TurnPipeline {
       followUpsUsedForObjective: state.followUpsByObjective[question.objectiveId] ?? 0,
       maxFollowUpsPerObjective: interview.maxFollowUpsPerObjective,
       unresolvedMustHaveObjectiveIds: objectives
-        .filter((o) => o.status === 'PENDING' || o.status === 'IN_PROGRESS')
+        .filter(
+          (o) =>
+            (o.status === 'PENDING' || o.status === 'IN_PROGRESS') &&
+            mustHaveObjectiveIds.has(String(o.id)),
+        )
         .map((o) => String(o.id)),
       referencesValid,
     };
@@ -445,6 +472,11 @@ export class TurnPipeline {
         }),
       );
       await d.audit.write(cmd.interviewId, audit, tx);
+
+      // Step 16: forced or recommended completion runs finalization in the same
+      // transaction — CLOSING -> COMPLETED always fires and is never partial.
+      if (isComplete && d.finalize) await d.finalize(cmd.interviewId, tx);
+
       await d.operations.succeed(claim.operationId, 200, body, tx);
       return body;
     });

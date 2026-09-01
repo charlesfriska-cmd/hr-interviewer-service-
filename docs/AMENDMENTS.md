@@ -162,3 +162,47 @@ own deterministic rule is satisfied. See `CONTRACT_ADDENDUM_v3.1.md` §A5.
 
 *Nothing in this document blocks implementation. Items A1–A5 are decisions already
 acted on or, where marked, awaiting sign-off before the affected component is built.*
+
+---
+
+## Implementation notes added during the persistence / initialization stage
+
+**Enum persistence strategy.** Closed sets are stored as `TEXT` with `CHECK`
+constraints rather than native Postgres enum types. Adding a value to a native
+enum is a DDL migration that cannot run in every transaction context, and the
+sets are already enforced by Ajv and the domain layer; the `CHECK` is the
+storage-layer backstop, not the primary gate.
+
+**Objectives are relational, not JSONB.** `ARCHITECTURE.md` §10 sketched
+`interview_plans.objectives` as JSONB. Questions, evidence and gaps all carry
+foreign keys to an objective, and that is what preserves the §25 traceability
+chain in the database rather than only in application code. `interview_plans`
+remains as the version record.
+
+**Two defects found and fixed while wiring the pipelines end to end:**
+
+1. `PREMATURE_COMPLETION_BLOCKED` was evaluating *every* unresolved objective
+   rather than MUST_HAVE-linked ones. An interview carrying only NICE_TO_HAVE
+   work outstanding could never complete. Scoped via a new
+   `PlanRepository.mustHaveObjectiveIds`.
+2. `FinalizeInterviewService` read through the connection pool while being
+   invoked from inside TX-B, so it could not see the evidence, assessments and
+   gaps the same turn had just written. Every finalization read now runs in the
+   caller's transaction.
+
+**A5 auto-resolution needed a finalization sweep.** Per-turn auto-resolution only
+reaches the objective being answered. An objective the interview has already
+moved past can still carry an advisory gap the agent opened and never closed,
+which would settle it as `INSUFFICIENT_EVIDENCE` and drop a genuinely successful
+objective out of the weighted average. `FinalizeInterviewService` now sweeps
+every objective before scoring, with no gap types re-asserted and
+`contradictionStatus: NONE`, so a blocking gap is never cleared by the sweep.
+
+**Idempotency precedes the stale-question check** in the turn pipeline.
+`ARCHITECTURE.md` §13 lists question validation as step 2 and idempotency as step
+3, but `INTERVIEW_STATE.md` §6 distinguishes the two cases by key: the same key on
+an already-succeeded turn is a replay that must return the cached body, while a
+different or absent key on a question that has moved on is a stale resubmit.
+Checking staleness first makes a legitimate network retry impossible, since
+`lastQuestionId` has advanced by then. A claim that then fails the stale check is
+released so it cannot hold the key's lease.
